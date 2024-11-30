@@ -63,6 +63,7 @@ in {
       pname = pnameGen "wine-tkg";
       version = lib.removeSuffix "\n" (lib.removePrefix "Wine version " (builtins.readFile "${src}/VERSION"));
       src = pins.wine-tkg;
+      patches = [./add-WINE_WAYLAND_DISPLAY_INDEX.patch];
     });
 
   wine-osu = let
