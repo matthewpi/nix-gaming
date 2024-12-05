@@ -1,0 +1,176 @@
+diff --git a/dlls/winewayland.drv/wayland_pointer.c b/dlls/winewayland.drv/wayland_pointer.c
+index c20ba170285..c10abb60be9 100644
+--- a/dlls/winewayland.drv/wayland_pointer.c
++++ b/dlls/winewayland.drv/wayland_pointer.c
+@@ -84,6 +84,10 @@ static void pointer_handle_motion_internal(wl_fixed_t sx, wl_fixed_t sy)
+     input.mi.dx = screen.x;
+     input.mi.dy = screen.y;
+     input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
++    pthread_mutex_lock(&process_wayland.pointer.mutex);
++    process_wayland.pointer.cursor_pos.x = screen.x;
++    process_wayland.pointer.cursor_pos.y = screen.y;
++    pthread_mutex_unlock(&process_wayland.pointer.mutex);
+ 
+     TRACE("hwnd=%p wayland_xy=%.2f,%.2f screen_xy=%d,%d\n",
+           hwnd, wl_fixed_to_double(sx), wl_fixed_to_double(sy),
+@@ -298,6 +302,15 @@ void wayland_pointer_init(struct wl_pointer *wl_pointer)
+     pointer->wl_pointer = wl_pointer;
+     pointer->focused_hwnd = NULL;
+     pointer->enter_serial = 0;
++    if (process_wayland.zwp_relative_pointer_manager_v1 != NULL)
++    {
++        pointer->zwp_relative_pointer_v1 = zwp_relative_pointer_manager_v1_get_relative_pointer(
++            process_wayland.zwp_relative_pointer_manager_v1,
++            pointer->wl_pointer);
++        zwp_relative_pointer_v1_add_listener(pointer->zwp_relative_pointer_v1,
++                                                &relative_pointer_v1_listener, NULL);
++    }
++
+     pthread_mutex_unlock(&pointer->mutex);
+     wl_pointer_add_listener(pointer->wl_pointer, &pointer_listener, NULL);
+ }
+@@ -748,7 +761,7 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
+                                               BOOL covers_vscreen)
+ {
+     struct wayland_pointer *pointer = &process_wayland.pointer;
+-    BOOL needs_relative, needs_lock, needs_confine;
++    BOOL needs_lock, needs_confine;
+     static unsigned int once;
+ 
+     if (!process_wayland.zwp_pointer_constraints_v1)
+@@ -841,27 +854,49 @@ static void wayland_pointer_update_constraint(struct wl_surface *wl_surface,
+             ERR("zwp_relative_pointer_manager_v1 isn't supported, skipping relative motion\n");
+         return;
+     }
++}
+ 
+-    needs_relative = !pointer->cursor.wl_surface &&
+-                     pointer->constraint_hwnd &&
+-                     pointer->constraint_hwnd == pointer->focused_hwnd;
+-
+-    if (needs_relative && !pointer->zwp_relative_pointer_v1)
++static void wayland_set_cursor_pos(INT x, INT y)
++{
++    struct wayland_pointer *pointer = &process_wayland.pointer;
++    struct wayland_win_data *data;
++    struct wayland_surface *surface;
++    struct zwp_locked_pointer_v1 *lock;
++    BOOL was_confined = false;
++    if (pointer->focused_hwnd == NULL || pointer->zwp_locked_pointer_v1 != NULL)
+     {
+-        pointer->zwp_relative_pointer_v1 =
+-            zwp_relative_pointer_manager_v1_get_relative_pointer(
+-                process_wayland.zwp_relative_pointer_manager_v1,
+-                pointer->wl_pointer);
+-        zwp_relative_pointer_v1_add_listener(pointer->zwp_relative_pointer_v1,
+-                                             &relative_pointer_v1_listener, NULL);
+-        TRACE("Enabling relative motion\n");
++        return;
+     }
+-    else if (!needs_relative && pointer->zwp_relative_pointer_v1)
++    pthread_mutex_lock(&pointer->mutex);
++    if (pointer->zwp_confined_pointer_v1 != NULL)
+     {
+-        zwp_relative_pointer_v1_destroy(pointer->zwp_relative_pointer_v1);
+-        pointer->zwp_relative_pointer_v1 = NULL;
+-        TRACE("Disabling relative motion\n");
++        zwp_confined_pointer_v1_destroy(pointer->zwp_confined_pointer_v1);
++        pointer->zwp_confined_pointer_v1 = NULL;
++        was_confined = TRUE;
+     }
++    if (data = wayland_win_data_get(pointer->focused_hwnd))
++    {
++        if (surface = data->wayland_surface)
++        {
++            lock = zwp_pointer_constraints_v1_lock_pointer(
++                process_wayland.zwp_pointer_constraints_v1, surface->wl_surface, pointer->wl_pointer, NULL,
++                ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
++            zwp_locked_pointer_v1_set_cursor_position_hint(lock, wl_fixed_from_int(x), wl_fixed_from_int(y));
++            wl_surface_commit(surface->wl_surface);
++            zwp_locked_pointer_v1_destroy(lock);
++            if (was_confined)
++            {
++                wayland_pointer_update_constraint(surface->wl_surface,
++                    &pointer->confine_rect, pointer->confine_covers_vscreen);
++            }
++        }
++        wayland_win_data_release(data);
++    }
++
++    pointer->cursor_pos.x = x;
++    pointer->cursor_pos.y = y;
++    pthread_mutex_unlock(&pointer->mutex);
++    wl_display_flush(process_wayland.wl_display);
+ }
+ 
+ void wayland_pointer_clear_constraint(void)
+@@ -879,6 +914,21 @@ void WAYLAND_SetCursor(HWND hwnd, HCURSOR hcursor)
+     wayland_set_cursor(hwnd, hcursor, TRUE);
+ }
+ 
++BOOL WAYLAND_GetCursorPos(LPPOINT pt)
++{
++    struct wayland_pointer *pointer = &process_wayland.pointer;
++    *pt = pointer->cursor_pos;
++    return TRUE;
++}
++
++BOOL WAYLAND_SetCursorPos(INT x, INT y)
++{
++    TRACE("x=%d y=%d\n", x, y);
++
++    wayland_set_cursor_pos(x, y);
++    return TRUE;
++}
++
+ /***********************************************************************
+  *	     WAYLAND_ClipCursor
+  */
+@@ -906,6 +956,11 @@ BOOL WAYLAND_ClipCursor(const RECT *clip, BOOL reset)
+     * that the wl_surface of the foreground HWND will not be invalidated,
+     * so we can access it without having the win data lock. */
+     pthread_mutex_lock(&pointer->mutex);
++    if (clip)
++    {
++        pointer->confine_rect = *clip;
++        pointer->confine_covers_vscreen = covers_vscreen;
++    }
+     wayland_pointer_update_constraint(wl_surface,
+                                       (clip && wl_surface) ? &confine_rect : NULL,
+                                       covers_vscreen);
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index 72a37cb3ffb..b4007085f83 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -103,6 +103,9 @@ struct wayland_pointer
+     struct zwp_confined_pointer_v1 *zwp_confined_pointer_v1;
+     struct zwp_locked_pointer_v1 *zwp_locked_pointer_v1;
+     struct zwp_relative_pointer_v1 *zwp_relative_pointer_v1;
++    POINT cursor_pos;
++    RECT confine_rect;
++    BOOL confine_covers_vscreen;
+     HWND focused_hwnd;
+     HWND constraint_hwnd;
+     uint32_t enter_serial;
+@@ -375,6 +378,8 @@ BOOL WAYLAND_ClipCursor(const RECT *clip, BOOL reset);
+ LRESULT WAYLAND_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+ void WAYLAND_DestroyWindow(HWND hwnd);
+ void WAYLAND_SetCursor(HWND hwnd, HCURSOR hcursor);
++BOOL WAYLAND_GetCursorPos(LPPOINT pt);
++BOOL WAYLAND_SetCursorPos(INT x, INT y);
+ void WAYLAND_SetWindowText(HWND hwnd, LPCWSTR text);
+ LRESULT WAYLAND_SysCommand(HWND hwnd, WPARAM wparam, LPARAM lparam, const POINT *pos);
+ UINT WAYLAND_UpdateDisplayDevices(const struct gdi_device_manager *device_manager, void *param);
+diff --git a/dlls/winewayland.drv/waylanddrv_main.c b/dlls/winewayland.drv/waylanddrv_main.c
+index 47c1299dd01..dee0eec3a90 100644
+--- a/dlls/winewayland.drv/waylanddrv_main.c
++++ b/dlls/winewayland.drv/waylanddrv_main.c
+@@ -41,6 +41,8 @@ static const struct user_driver_funcs waylanddrv_funcs =
+     .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
+     .pReleaseKbdTables = WAYLAND_ReleaseKbdTables,
+     .pSetCursor = WAYLAND_SetCursor,
++    .pGetCursorPos = WAYLAND_GetCursorPos,
++    .pSetCursorPos = WAYLAND_SetCursorPos,
+     .pSetWindowText = WAYLAND_SetWindowText,
+     .pSysCommand = WAYLAND_SysCommand,
+     .pUpdateDisplayDevices = WAYLAND_UpdateDisplayDevices,
