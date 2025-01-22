@@ -25,10 +25,8 @@
   enableGlCache ? true,
   glCacheSize ? 1073741824,
   disableEac ? false,
-  wayland ? false,
   pkgs,
 }: let
-  inherit (lib.strings) concatStringsSep optionalString;
   # Latest version can be found: https://install.robertsspaceindustries.com/rel/2/latest.yml
   version = "2.1.0";
   src = pkgs.fetchurl {
@@ -42,30 +40,25 @@
   # concat winetricks args
   tricksFmt =
     if (builtins.length tricks) > 0
-    then concatStringsSep " " tricks
+    then lib.concatStringsSep " " tricks
     else "-V";
 
-  gameScope = lib.strings.optionalString gameScopeEnable "${gamescope}/bin/gamescope ${concatStringsSep " " gameScopeArgs} --";
+  gameScope = lib.strings.optionalString gameScopeEnable "${gamescope}/bin/gamescope ${lib.concatStringsSep " " gameScopeArgs} --";
 
   libs = with pkgs; [freetype vulkan-loader];
 
   script = writeShellScriptBin pname ''
-    ${optionalString wayland ''
-      # Wine wayland
-      export DISPLAY=
-    ''}
-
     export WINETRICKS_LATEST_VERSION_CHECK=disabled
     export WINEARCH="win64"
     export WINEPREFIX="$(readlink -f ${location})"
     ${
-      optionalString
+      lib.optionalString
       #this option doesn't work on umu, an umu TOML config file will be needed instead
       (!useUmu)
       ''
         export WINEFSYNC=1
         export WINEESYNC=1
-        export WINEDLLOVERRIDES="${lib.strings.concatStringsSep "," wineDllOverrides}"
+        export WINEDLLOVERRIDES="${lib.concatStringsSep "," wineDllOverrides}"
         ${lib.optionalString disableEac ''
           # Anti-cheat
           export EOS_USE_ANTICHEATCLIENTNULL=1
@@ -102,7 +95,7 @@
     ${
       if useUmu
       then ''
-        export PROTON_VERBS="${concatStringsSep "," protonVerbs}"
+        export PROTON_VERBS="${lib.concatStringsSep "," protonVerbs}"
         export PROTONPATH="${protonPath}"
         if [ ! -f "$RSI_LAUNCHER" ]; then umu-run "${src}" /S; fi
       ''

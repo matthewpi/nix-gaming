@@ -24,10 +24,10 @@
       };
     };
 
-  # auto-fetch deps when `nix run/shell`ing
-  nixConfig = {
-    allowInsecure = true;
-    extra-substituters = ["https://nix-gaming.cachix.org"];
-    extra-trusted-public-keys = ["nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="];
-  };
+  # # auto-fetch deps when `nix run/shell`ing
+  # nixConfig = {
+  #   allowInsecure = true;
+  #   extra-substituters = ["https://nix-gaming.cachix.org"];
+  #   extra-trusted-public-keys = ["nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="];
+  # };
 }
