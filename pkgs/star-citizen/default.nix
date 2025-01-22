@@ -24,6 +24,8 @@
   postCommands ? "",
   enableGlCache ? true,
   glCacheSize ? 1073741824,
+  disableEac ? false,
+  wayland ? false,
   pkgs,
 }: let
   inherit (lib.strings) concatStringsSep optionalString;
@@ -45,10 +47,17 @@
 
   gameScope = lib.strings.optionalString gameScopeEnable "${gamescope}/bin/gamescope ${concatStringsSep " " gameScopeArgs} --";
 
+  libs = with pkgs; [freetype vulkan-loader];
+
   script = writeShellScriptBin pname ''
+    ${optionalString wayland ''
+      # Wine wayland
+      export DISPLAY=
+    ''}
+
     export WINETRICKS_LATEST_VERSION_CHECK=disabled
     export WINEARCH="win64"
-    export WINEPREFIX="${location}"
+    export WINEPREFIX="$(readlink -f ${location})"
     ${
       optionalString
       #this option doesn't work on umu, an umu TOML config file will be needed instead
@@ -57,8 +66,10 @@
         export WINEFSYNC=1
         export WINEESYNC=1
         export WINEDLLOVERRIDES="${lib.strings.concatStringsSep "," wineDllOverrides}"
-        # Anti-cheat
-        export EOS_USE_ANTICHEATCLIENTNULL=1
+        ${lib.optionalString disableEac ''
+          # Anti-cheat
+          export EOS_USE_ANTICHEATCLIENTNULL=1
+        ''}
         # Nvidia tweaks
         export WINE_HIDE_NVIDIA_GPU=1
         # AMD
@@ -85,6 +96,7 @@
         else [wine winetricks]
       )
     }:$PATH
+    export LD_LIBRARY_PATH=${lib.makeLibraryPath libs}:"$LD_LIBRARY_PATH"
     USER="$(whoami)"
     RSI_LAUNCHER="$WINEPREFIX/drive_c/Program Files/Roberts Space Industries/RSI Launcher/RSI Launcher.exe"
     ${
@@ -112,10 +124,12 @@
       ''
     }
     # EAC Fix
-    if [ -d "$WINEPREFIX/drive_c/users/$USER/AppData/Roaming/EasyAntiCheat" ]
-    then
-      rm -rf "$WINEPREFIX/drive_c/users/$USER/AppData/Roaming/EasyAntiCheat";
-    fi
+    ${lib.optionalString disableEac ''
+      # EAC Fix
+      if [ -d "$WINEPREFIX/drive_c/users/$USER/AppData/Roaming/EasyAntiCheat" ]; then
+        rm -rf "$WINEPREFIX/drive_c/users/$USER/AppData/Roaming/EasyAntiCheat";
+      fi
+    ''}
     cd $WINEPREFIX
 
     ${preCommands}
